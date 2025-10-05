@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
-// Écrans
+import 'package:musiclooper_clean/screens/backing_player_screen.dart';
 import 'screens/unified_player_beta.dart';
-import 'screens/backing_track_screen.dart';
+// import 'screens/backing_track_screen.dart'; // ⛔️ plus utilisé
 import 'screens/tools_screen.dart';
 
 // NOUVEAU : Atelier (bibliothèque)
@@ -34,7 +34,6 @@ class LoopTrainerApp extends StatelessWidget {
           type: BottomNavigationBarType.fixed,
         ),
       ),
-      // On conserve ton démarrage direct sur les onglets
       home: const HomeShell(),
     );
   }
@@ -50,12 +49,12 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int _tabIndex = 0;
 
-  // 4 pages : Player+YT, Backing, Outils, Atelier
+  // 4 pages : Player+YT, Backing (nouveau), Outils, Atelier
   late final List<Widget> _pages = const [
-    UnifiedPlayerBeta(),    // Player unifié (Local + YouTube)
-    BackingTrackScreen(),   // Backing tracks
-    ToolsScreen(),          // Outils (Tuner + Métronome)
-    AtelierScreen(),        // Atelier / Bibliothèque
+    UnifiedPlayerBeta(),        // Player unifié (Local + YouTube)
+    BackingPlayerScreen(),      // ✅ Backing: clone du Player+YT (nouveau)
+    ToolsScreen(),              // Outils (Tuner + Métronome)
+    AtelierScreen(),            // Atelier / Bibliothèque
   ];
 
   @override
