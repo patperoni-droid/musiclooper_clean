@@ -1,0 +1,9 @@
+# ? Mémoire Gradle (8 Go de RAM pour éviter les crashs)
+org.gradle.jvmargs=-Xmx8G -XX:MaxMetaspaceSize=1G -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8
+
+# ? AndroidX (obligatoire)
+android.useAndroidX=true
+android.enableJetifier=true
+
+# ? Kotlin : warnings seulement, pas d'arrêt du build
+kotlin.jvm.target.validation.mode=warning
