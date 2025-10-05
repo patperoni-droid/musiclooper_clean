@@ -1,4 +1,6 @@
 // android/build.gradle.kts
+import org.gradle.api.tasks.compile.JavaCompile
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 allprojects {
@@ -13,14 +15,20 @@ tasks.register<Delete>("clean") {
 }
 
 subprojects {
-    // Java 17 pour tout le monde
+    // Aligne tous les sous-projets sur Java 17 et neutralise un éventuel --release
     tasks.withType<JavaCompile>().configureEach {
+        if (options.release.orNull != null) {
+            options.release.set(null as Int?)
+        }
+        // JavaCompile attend des String
         sourceCompatibility = JavaVersion.VERSION_17.toString()
         targetCompatibility = JavaVersion.VERSION_17.toString()
-        options.release.set(17)
     }
-    // Kotlin 17 pour tout le monde
-    tasks.withType(KotlinCompile::class.java).configureEach {
-        kotlinOptions.jvmTarget = "17"
+
+    // Kotlin -> DSL moderne
+    tasks.withType<KotlinCompile>().configureEach {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_17)
+        }
     }
 }

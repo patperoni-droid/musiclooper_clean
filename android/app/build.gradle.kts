@@ -1,3 +1,5 @@
+// android/app/build.gradle.kts
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -8,36 +10,36 @@ plugins {
 android {
     namespace = "com.example.musiclooper_clean"
 
-    // Versions fournies par le plugin Flutter
-    compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    // ✅ Compile avec la dernière API installée (Android 15 / API 36)
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.example.musiclooper_clean"
-        minSdk = flutter.minSdkVersion
-        targetSdk = flutter.targetSdkVersion
-        versionCode = flutter.versionCode
-        versionName = flutter.versionName
+        minSdk = flutter.minSdkVersion            // ✅ version minimale supportée (Android 5.0)
+        targetSdk = 34          // ✅ version ciblée (Android 14)
+        versionCode = 1
+        versionName = "1.0"
     }
 
-    // Java/Kotlin 17 partout
+    // ✅ Java/Kotlin 17 pour tout le projet
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
     kotlinOptions {
         jvmTarget = "17"
     }
 
     buildTypes {
         release {
-            // Clé debug pour permettre flutter run --release
+            // Utilise la clé debug pour permettre flutter run --release sans config signée
             signingConfig = signingConfigs.getByName("debug")
         }
     }
 }
 
 flutter {
-    // Chemin du projet Flutter
+    // ✅ Chemin du projet Flutter (racine)
     source = "../.."
 }

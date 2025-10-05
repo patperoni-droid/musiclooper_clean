@@ -12,8 +12,8 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
-  file_picker: ^8.3.7
-  just_audio: ^0.9.42
+  file_picker: ^10.3.3
+  just_audio: ^0.10.5
   video_player: ^2.9.2
   shared_preferences: ^2.2.3
   permission_handler: ^12.0.1
@@ -21,12 +21,13 @@ dependencies:
   youtube_player_flutter: ^9.1.2
   receive_sharing_intent: ^1.8.0
   path: ^1.9.0
-
+dependency_overrides:
+  audio_session: ^0.2.2
 dev_dependencies:
   flutter_test:
     sdk: flutter
   # On garde la version plus récente du template clean
-  flutter_lints: ^5.0.0
+  flutter_lints: ^6.0.0
 
 flutter:
   uses-material-design: true
