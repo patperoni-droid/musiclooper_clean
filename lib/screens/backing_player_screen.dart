@@ -401,6 +401,108 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
         : "${m.toString().padLeft(2,'0')}:${s.toString().padLeft(2,'0')}";
   }
 
+  /// Timeline simple avec repères de marqueurs + seek tap/drag.
+  Widget _timelineWithMarkers() {
+    const double barH = 36.0;
+    const double posLineW = 2.0;
+    const double markerW = 2.0;
+    const double markerH = 16.0;
+    final accent = _accent;
+
+    final double durMs = _duration.inMilliseconds.toDouble();
+    final double posMs = _position.inMilliseconds.toDouble();
+
+    if (durMs <= 0) {
+      return Container(
+        height: barH,
+        decoration: BoxDecoration(
+          color: const Color(0xFF2A2A2A),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.white24),
+        ),
+      );
+    }
+
+    return LayoutBuilder(
+      builder: (ctx, cons) {
+        final double w = cons.maxWidth;
+
+        double msToX(double ms) => ((ms / durMs).clamp(0.0, 1.0)) * w;
+        double xToMs(double x) => ((x / w).clamp(0.0, 1.0)) * durMs;
+
+        Future<void> seekAt(double dx) async {
+          final int ms = xToMs(dx).round();
+          final d = Duration(milliseconds: ms);
+          if (_source == _Source.youtube) {
+            _seekYt(d);
+          } else {
+            await _seekLocal(d);
+          }
+        }
+
+        final double posX = msToX(posMs);
+
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapDown: (d) => seekAt(d.localPosition.dx),
+          onPanUpdate: (d) => seekAt(d.localPosition.dx),
+          child: SizedBox(
+            height: barH,
+            child: Stack(
+              children: [
+                // fond
+                Positioned.fill(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E1E1E),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                  ),
+                ),
+                // progression
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: FractionallySizedBox(
+                    widthFactor: (posX / w).clamp(0.0, 1.0),
+                    child: Container(
+                      height: 6,
+                      margin: const EdgeInsets.symmetric(horizontal: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.orangeAccent,
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    ),
+                  ),
+                ),
+                // cheveu de lecture
+                Positioned(
+                  left: ((posX - posLineW / 2).clamp(0.0, w - posLineW)).toDouble(),
+                  top: 4,
+                  bottom: 4,
+                  child: Container(width: posLineW, color: Colors.white),
+                ),
+                // repères
+                ..._markers.map((m) {
+                  final double x = msToX(m.at.inMilliseconds.toDouble());
+                  final double left = ((x - markerW / 2).clamp(0.0, w - markerW)).toDouble();
+                  return Positioned(
+                    left: left,
+                    top: (barH - markerH) / 2,
+                    width: markerW,
+                    height: markerH,
+                    // remplace withOpacity() par withValues(alpha: …)
+                    child: Container(color: accent.withValues(alpha: 0.9)),
+                  );
+                }),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   // ------------------ BUILD ------------------
   @override
   Widget build(BuildContext context) {
@@ -579,6 +681,12 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
                 Text(_fmt(_duration), style: const TextStyle(color: Colors.white70)),
               ],
             ),
+          ),
+
+          // Timeline avec repères
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+            child: _timelineWithMarkers(),
           ),
 
           // Marqueurs (chips) — avec long press via GestureDetector
