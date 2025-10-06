@@ -1,8 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
-
-import '../core/library_service.dart';
-import '../core/library_item.dart';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -12,14 +10,29 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 import 'package:youtube_player_flutter/youtube_player_flutter.dart';
 
-/// Backing Player : clone de UnifiedPlayerBeta (YouTube + local) avec clés de persistance séparées.
-class BackingPlayerScreen extends StatefulWidget {
-  final String? initialYoutubeUrl;
+/// ----- Modèle de marqueur (top-level, pas dans la classe de State)
+class _Marker {
+  String id;        // stable (pour delete)
+  String name;      // "1", "2", ... (renommable)
+  Duration at;      // position
 
-  const BackingPlayerScreen({
-    super.key,
-    this.initialYoutubeUrl,
-  });
+  _Marker({required this.id, required this.name, required this.at});
+
+  Map<String, dynamic> toJson() =>
+      {'id': id, 'name': name, 'ms': at.inMilliseconds};
+
+  static _Marker fromJson(Map<String, dynamic> m) => _Marker(
+    id: m['id'] as String,
+    name: m['name'] as String,
+    at: Duration(milliseconds: m['ms'] as int),
+  );
+}
+
+/// Backing Player (HYBRIDE): Local + YouTube + Marqueurs "live"
+class BackingPlayerScreen extends StatefulWidget {
+  final String? initialYoutubeUrl; // optionnel
+
+  const BackingPlayerScreen({super.key, this.initialYoutubeUrl});
 
   @override
   State<BackingPlayerScreen> createState() => _BackingPlayerScreenState();
@@ -28,21 +41,12 @@ class BackingPlayerScreen extends StatefulWidget {
 enum _Source { local, youtube }
 
 class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
-  // -------------------- état commun --------------------
-  final LibraryService _libraryService = LibraryService();
+  // ------------------ état commun ------------------
   _Source _source = _Source.local;
-
-  // A/B loop
-  Duration? _a;
-  Duration? _b;
-  bool _loopEnabled = false;
-  bool _skipLoopOnce = false;
-
-  // position/durée communes
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
 
-  // -------------------- LOCAL --------------------
+  // ------------------ Local ------------------
   String? _mediaPath;
   VideoPlayerController? _video;
   final AudioPlayer _audio = AudioPlayer();
@@ -54,104 +58,24 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
       _source == _Source.local &&
           (_isVideo ? (_video?.value.isPlaying ?? false) : _audio.playing);
 
-  // -------------------- YOUTUBE --------------------
+  // ------------------ YouTube ------------------
   final TextEditingController _ytCtrl = TextEditingController();
   YoutubePlayerController? _yt;
 
   bool get _isPlayingYt =>
       _source == _Source.youtube && (_yt?.value.isPlaying ?? false);
 
-  // marge minimale entre A et B
-  static const int _minABGapMs = 200;
+  // ------------------ Marqueurs ------------------
+  List<_Marker> _markers = [];
+  int _autoMarkerCounter = 0;
 
-  // --- ZOOM ---
-  double _zoomFactor = 1.0; // 1.0 = vue globale
-  static const double _minZoom = 1.0;
-  static const double _maxZoom = 20.0;
-
-  void _zoomOut() {
-    setState(() => _zoomFactor = (_zoomFactor / 1.25).clamp(_minZoom, _maxZoom));
-  }
-
-  void _zoomIn() {
-    setState(() => _zoomFactor = (_zoomFactor * 1.25).clamp(_minZoom, _maxZoom));
-  }
-
-  // --- couleurs (mêmes que Player) ---
+  // ------------------ UI ------------------
   Color get _accent => const Color(0xFFFF9500);
 
-  // === helpers ===
-  double _safeClamp(double v, double min, double max) {
-    if (max < min) max = min;
-    return v.clamp(min, max).toDouble();
-  }
-
-  /// Extraction d'ID YouTube robuste
-  String? _extractYoutubeId(String input) {
-    final txt = input.trim();
-    if (txt.isEmpty) return null;
-
-    final uri = Uri.tryParse(txt);
-
-    if (uri != null && uri.host.contains('youtu.be')) {
-      if (uri.pathSegments.isNotEmpty) {
-        return uri.pathSegments.first;
-      }
-    }
-
-    if (uri != null && uri.queryParameters['v'] != null) {
-      return uri.queryParameters['v'];
-    }
-
-    if (uri != null &&
-        uri.pathSegments.isNotEmpty &&
-        uri.pathSegments.first == 'shorts' &&
-        uri.pathSegments.length >= 2) {
-      return uri.pathSegments[1];
-    }
-
-    return YoutubePlayer.convertUrlToId(txt);
-  }
-
-  String? _currentYoutubeUrl() {
-    if (_source != _Source.youtube) return null;
-
-    final txt = _ytCtrl.text.trim();
-    if (txt.isNotEmpty) return txt;
-
-    final id = _yt?.value.metaData.videoId;
-    if (id != null && id.isNotEmpty) return "https://youtu.be/$id";
-
-    return null;
-  }
-
-  String _currentTitle() {
-    if (_source == _Source.youtube) {
-      return _yt?.value.metaData.title ?? "Vidéo YouTube";
-    }
-    return _mediaPath != null ? p.basename(_mediaPath!) : "Média local";
-  }
-
-  Future<void> _saveToLibrary(String url, String title) async {
-    final item = LibraryItem(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      title: title,
-      url: url,
-      source: 'youtube',
-      notes: '',
-    );
-    await _libraryService.addItem(item);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('✅ Vidéo ajoutée à l’Atelier')),
-    );
-  }
-
-  // -------------------- lifecycle --------------------
+  // ------------------ lifecycle ------------------
   @override
   void initState() {
     super.initState();
-
     if (widget.initialYoutubeUrl != null &&
         widget.initialYoutubeUrl!.trim().isNotEmpty) {
       _source = _Source.youtube;
@@ -159,7 +83,6 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
       final id = _extractYoutubeId(_ytCtrl.text);
       if (id != null) _initYoutube(id);
     }
-
     _restoreLast();
   }
 
@@ -175,15 +98,42 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
     super.dispose();
   }
 
-  // -------------------- PERSISTENCE (préfixe 'backing.') --------------------
+  // ------------------ Helpers ------------------
+  String? _extractYoutubeId(String input) {
+    final txt = input.trim();
+    if (txt.isEmpty) return null;
+    final uri = Uri.tryParse(txt);
+
+    if (uri != null && uri.host.contains('youtu.be')) {
+      if (uri.pathSegments.isNotEmpty) return uri.pathSegments.first;
+    }
+    if (uri != null && uri.queryParameters['v'] != null) {
+      return uri.queryParameters['v'];
+    }
+    if (uri != null &&
+        uri.pathSegments.isNotEmpty &&
+        uri.pathSegments.first == 'shorts' &&
+        uri.pathSegments.length >= 2) {
+      return uri.pathSegments[1];
+    }
+    return YoutubePlayer.convertUrlToId(txt);
+  }
+
+  String? get _currentMediaKey {
+    if (_source == _Source.youtube) {
+      final id = _yt?.value.metaData.videoId;
+      return (id == null || id.isEmpty) ? null : 'yt:$id';
+    } else {
+      return (_mediaPath == null) ? null : 'local:${_mediaPath!}';
+    }
+  }
+
+  // ------------------ PERSISTENCE ------------------
   Future<void> _restoreLast() async {
     final sp = await SharedPreferences.getInstance();
 
-    if (widget.initialYoutubeUrl == null ||
-        widget.initialYoutubeUrl!.trim().isEmpty) {
-      final src = sp.getString('backing.src');
-      _source = (src == 'yt') ? _Source.youtube : _Source.local;
-    }
+    final src = sp.getString('backing.src');
+    if (src == 'yt') _source = _Source.youtube;
 
     final lastUrl = sp.getString('backing.yt.url');
     if (lastUrl != null && lastUrl.isNotEmpty) {
@@ -197,22 +147,13 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
       await _openLocal(lastPath, autostart: false);
     }
 
-    final aMs = sp.getInt('backing.ab.a') ?? -1;
-    final bMs = sp.getInt('backing.ab.b') ?? -1;
-    _a = aMs >= 0 ? Duration(milliseconds: aMs) : null;
-    _b = bMs >= 0 ? Duration(milliseconds: bMs) : null;
-    _loopEnabled = sp.getBool('backing.ab.loop') ?? false;
-
+    await _loadMarkers(); // en fonction de la source courante
     if (mounted) setState(() {});
   }
 
   Future<void> _saveCommon() async {
     final sp = await SharedPreferences.getInstance();
     await sp.setString('backing.src', _source == _Source.youtube ? 'yt' : 'local');
-    await sp.setInt('backing.ab.a', _a?.inMilliseconds ?? -1);
-    await sp.setInt('backing.ab.b', _b?.inMilliseconds ?? -1);
-    await sp.setBool('backing.ab.loop', _loopEnabled);
-
     if (_source == _Source.youtube && _ytCtrl.text.isNotEmpty) {
       await sp.setString('backing.yt.url', _ytCtrl.text.trim());
     }
@@ -221,7 +162,40 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
     }
   }
 
-  // -------------------- LOCAL --------------------
+  Future<void> _loadMarkers() async {
+    final key = _currentMediaKey;
+    _markers = [];
+    _autoMarkerCounter = 0;
+    if (key == null) {
+      if (mounted) setState(() {});
+      return;
+    }
+    final sp = await SharedPreferences.getInstance();
+    final raw = sp.getString('backing.markers.$key');
+    if (raw != null && raw.isNotEmpty) {
+      final List list = jsonDecode(raw) as List;
+      _markers = list
+          .map((e) => _Marker.fromJson(e as Map<String, dynamic>))
+          .toList()
+        ..sort((a, b) => a.at.compareTo(b.at));
+      // recalc auto-counter à partir de noms numériques
+      final nums = _markers
+          .map((m) => int.tryParse(m.name.trim()) ?? 0)
+          .toList();
+      _autoMarkerCounter = nums.isEmpty ? 0 : nums.reduce((a, b) => a > b ? a : b);
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _saveMarkers() async {
+    final key = _currentMediaKey;
+    if (key == null) return;
+    final sp = await SharedPreferences.getInstance();
+    final raw = jsonEncode(_markers.map((m) => m.toJson()).toList());
+    await sp.setString('backing.markers.$key', raw);
+  }
+
+  // ------------------ LOCAL ------------------
   Future<void> _pickLocal() async {
     final res = await FilePicker.platform.pickFiles(
       type: FileType.custom,
@@ -229,7 +203,10 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
     );
     final path = res?.files.single.path;
     if (path == null) return;
+    setState(() => _source = _Source.local);
     await _openLocal(path);
+    await _saveCommon();
+    await _loadMarkers();
   }
 
   Future<void> _openLocal(String path, {bool autostart = true}) async {
@@ -251,7 +228,7 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
 
       _posSub = Stream<Duration>.periodic(const Duration(milliseconds: 200), (_) {
         return _video?.value.position ?? Duration.zero;
-      }).listen(_onTickLocal);
+      }).listen((pos) => setState(() => _position = pos));
 
       if (autostart) await c.play();
     } else {
@@ -259,7 +236,9 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
       _duration = _audio.duration ?? Duration.zero;
       _position = Duration.zero;
 
-      _posSub = _audio.positionStream.listen(_onTickLocal);
+      _posSub = _audio.positionStream.listen((pos) {
+        setState(() => _position = pos);
+      });
       _durSub = _audio.durationStream.listen((d) {
         if (d != null) {
           _duration = d;
@@ -269,32 +248,11 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
 
       if (autostart) await _audio.play();
     }
-
-    setState(() {});
-    _saveCommon();
-  }
-
-  void _onTickLocal(Duration pos) {
-    if (!mounted) return;
-    if (_duration == Duration.zero) return;
-
-    if (_skipLoopOnce) {
-      _skipLoopOnce = false;
-      setState(() => _position = pos);
-      return;
-    }
-
-    if (_loopEnabled && _a != null && _b != null && _a! < _b!) {
-      if (pos >= _b!) {
-        _seekLocal(_a!);
-        return;
-      }
-    }
-    setState(() => _position = pos);
+    if (mounted) setState(() {});
   }
 
   Future<void> _seekLocal(Duration d) async {
-    d = _clampDur(d, Duration.zero, _duration);
+    d = d < Duration.zero ? Duration.zero : (d > _duration ? _duration : d);
     if (_isVideo) {
       await _video!.seekTo(d);
     } else {
@@ -310,48 +268,31 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
     }
     if (_isVideo) {
       final c = _video!;
-      if (c.value.isPlaying) {
-        await c.pause();
-      } else {
-        await c.play();
-      }
+      c.value.isPlaying ? await c.pause() : await c.play();
     } else {
-      if (_audio.playing) {
-        await _audio.pause();
-      } else {
-        await _audio.play();
-      }
+      _audio.playing ? await _audio.pause() : await _audio.play();
     }
+    setState(() {});
   }
 
-  // -------------------- YOUTUBE --------------------
+  // ------------------ YOUTUBE ------------------
   void _ytListener() {
     if (!mounted || _source != _Source.youtube) return;
     final v = _yt!.value;
     _position = v.position;
     _duration = v.metaData.duration;
-
-    if (_loopEnabled && _a != null && _b != null && _a! < _b!) {
-      if (_position >= _b!) {
-        _yt!.seekTo(_a!);
-      }
-    }
     setState(() {});
   }
 
   void _initYoutube(String id) {
-    _loopEnabled = false;
-    _a = null;
-    _b = null;
-
     if (_yt == null) {
       _yt = YoutubePlayerController(
         initialVideoId: id,
         flags: const YoutubePlayerFlags(
           autoPlay: false,
           mute: false,
-          useHybridComposition: true,
           enableCaption: false,
+          useHybridComposition: true,
           controlsVisibleAtStart: true,
         ),
       )..addListener(_ytListener);
@@ -359,6 +300,8 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
       _yt!.load(id);
     }
     setState(() {});
+    _saveCommon();
+    _loadMarkers(); // charge les marqueurs de cette vidéo
   }
 
   void _playYtFromField() {
@@ -368,13 +311,14 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
       _snack("URL YouTube invalide");
       return;
     }
+    setState(() => _source = _Source.youtube);
     _initYoutube(id);
-    _saveCommon();
   }
 
   void _seekYt(Duration d) {
     if (_yt == null) return;
-    final clamped = _clampDur(d, Duration.zero, _duration);
+    final clamped =
+    d < Duration.zero ? Duration.zero : (d > _duration ? _duration : d);
     _yt!.seekTo(clamped);
     _position = clamped;
     setState(() {});
@@ -392,166 +336,59 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
     }
   }
 
-  // -------------------- A/B helpers --------------------
-  Duration _clampDur(Duration d, Duration min, Duration max) {
-    if (d < min) return min;
-    if (d > max) return max;
-    return d;
-  }
-
-  void _markA() {
-    final now = _position;
+  // ------------------ MARQUEURS ------------------
+  void _addMarkerAtCurrent() {
+    final id = DateTime.now().microsecondsSinceEpoch.toString();
+    final name = (++_autoMarkerCounter).toString();
+    final pos = _position; // ne pas stopper la lecture
     setState(() {
-      _a = now;
-      if (_b != null) _loopEnabled = (_a! < _b!);
+      _markers.add(_Marker(id: id, name: name, at: pos));
+      _markers.sort((a, b) => a.at.compareTo(b.at));
     });
-    _saveCommon();
+    _saveMarkers();
   }
 
-  void _markB() {
-    final now = _position;
-    setState(() {
-      _b = now;
-      if (_a != null) _loopEnabled = (_a! < _b!);
-    });
-    _saveCommon();
-  }
-
-  void _toggleLoop() {
-    if (_a == null || _b == null || !(_a! < _b!)) return;
-    setState(() => _loopEnabled = !_loopEnabled);
-    _saveCommon();
-  }
-
-  void _clearAB() {
-    setState(() {
-      _a = null;
-      _b = null;
-      _loopEnabled = false;
-    });
-    _saveCommon();
-  }
-
-  void _quickLoop() {
-    if (_duration == Duration.zero) return;
-
-    const gap = Duration(seconds: 4);
-    var b = _position;
-    var a = b - gap;
-
-    if (a < Duration.zero) a = Duration.zero;
-    if (b <= a + const Duration(milliseconds: _minABGapMs)) {
-      b = a + const Duration(milliseconds: _minABGapMs);
-      if (b > _duration) {
-        b = _duration;
-        a = b - const Duration(milliseconds: _minABGapMs);
-        if (a < Duration.zero) a = Duration.zero;
-      }
-    }
-
-    setState(() {
-      _a = a;
-      _b = b;
-      _loopEnabled = true;
-    });
-
-    if (_source == _Source.youtube) {
-      _seekYt(_a!);
-    } else {
-      _skipLoopOnce = true;
-      _seekLocal(_a!);
-    }
-
-    _saveCommon();
-  }
-
-  // ==================== NUDGE ====================
-  void _nudgeA(int deltaMs) {
-    if (_duration == Duration.zero) return;
-    final cur = _a ?? _position;
-    var next = _clampDur(
-      cur + Duration(milliseconds: deltaMs),
-      Duration.zero,
-      _duration,
-    );
-
-    if (_b != null && next >= _b!) {
-      next = _clampDur(
-        _b! - const Duration(milliseconds: _minABGapMs),
-        Duration.zero,
-        _duration,
-      );
-    }
-    setState(() => _a = next);
-    _saveCommon();
-  }
-
-  void _nudgeB(int deltaMs) {
-    if (_duration == Duration.zero) return;
-    final cur = _b ?? _position;
-    var next = _clampDur(
-      cur + Duration(milliseconds: deltaMs),
-      Duration.zero,
-      _duration,
-    );
-
-    if (_a != null && next <= _a!) {
-      next = _clampDur(
-        _a! + const Duration(milliseconds: _minABGapMs),
-        Duration.zero,
-        _duration,
-      );
-    }
-    setState(() {
-      _b = next;
-      if (_a != null && _b != null && _a! < _b!) _loopEnabled = true;
-    });
-    _saveCommon();
-  }
-
-  Widget _tinyChevron(String txt, VoidCallback onTap, Color color) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(6),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-        decoration: BoxDecoration(
-          color: const Color(0xFF2A2A2A),
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: Colors.white38),
+  Future<void> _renameMarker(_Marker m) async {
+    final ctrl = TextEditingController(text: m.name);
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('Renommer le marqueur', style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: ctrl,
+          style: const TextStyle(color: Colors.white),
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Nom',
+            hintStyle: TextStyle(color: Colors.white54),
+          ),
         ),
-        child: Text(txt, style: TextStyle(color: color, fontWeight: FontWeight.w700)),
+        actions: [
+          TextButton(onPressed: ()=> Navigator.pop(context), child: const Text('Annuler')),
+          ElevatedButton(onPressed: ()=> Navigator.pop(context, ctrl.text.trim()), child: const Text('OK')),
+        ],
       ),
     );
+    if (newName == null || newName.isEmpty) return;
+    setState(() => m.name = newName);
+    _saveMarkers();
   }
 
-  Widget _miniAB({
-    required String label,
-    required Duration time,
-    required VoidCallback onLessSmall,
-    required VoidCallback onMoreSmall,
-    required VoidCallback onLessBig,
-    required VoidCallback onMoreBig,
-  }) {
-    final muted = Colors.white.withOpacity(0.7);
-    return Row(
-      children: [
-        Text(label, style: TextStyle(color: _accent, fontWeight: FontWeight.w800)),
-        const SizedBox(width: 6),
-        _tinyChevron('≪', onLessBig, muted),
-        const SizedBox(width: 2),
-        _tinyChevron('‹', onLessSmall, muted),
-        const SizedBox(width: 6),
-        Text(_fmt(time), style: TextStyle(color: muted)),
-        const SizedBox(width: 6),
-        _tinyChevron('›', onMoreSmall, muted),
-        const SizedBox(width: 2),
-        _tinyChevron('≫', onMoreBig, muted),
-      ],
-    );
+  void _deleteMarker(String id) {
+    setState(() => _markers.removeWhere((e) => e.id == id));
+    _saveMarkers();
   }
 
-  // -------------------- UI helpers --------------------
+  Future<void> _jumpToMarker(_Marker m) async {
+    if (_source == _Source.youtube) {
+      _seekYt(m.at);
+    } else {
+      await _seekLocal(m.at);
+    }
+  }
+
+  // ------------------ UI helpers ------------------
   void _snack(String msg) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
 
@@ -560,232 +397,11 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
     final m = d.inMinutes.remainder(60);
     final s = d.inSeconds.remainder(60);
     return h > 0
-        ? "${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}"
-        : "${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}";
+        ? "${h.toString().padLeft(2,'0')}:${m.toString().padLeft(2,'0')}:${s.toString().padLeft(2,'0')}"
+        : "${m.toString().padLeft(2,'0')}:${s.toString().padLeft(2,'0')}";
   }
 
-  // ===== Timeline épaisse =====
-  Widget _timelineThick() {
-    const double barH = 48.0;
-    const double sideBtnW = 56.0;
-
-    return SizedBox(
-      height: barH,
-      child: Row(
-        children: [
-          SizedBox(width: sideBtnW, child: _zoomSideButton(isLeft: true)),
-          Expanded(child: _timelineCore(barH)),
-          SizedBox(width: sideBtnW, child: _zoomSideButton(isLeft: false)),
-        ],
-      ),
-    );
-  }
-
-  Widget _timelineCore(double barH) {
-    final double durMs = _duration.inMilliseconds.toDouble();
-    final double posMs = _position.inMilliseconds.toDouble();
-
-    const double posLineW = 2.0;
-    const double abBandH = 12.0;
-    const double handleW = 2.0;
-    const double handleTouchW = 28;
-
-    if (durMs <= 0) {
-      return Container(
-        height: barH,
-        decoration: BoxDecoration(
-          color: const Color(0xFF2A2A2A),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: Colors.white24),
-        ),
-      );
-    }
-
-    return LayoutBuilder(
-      builder: (ctx, cons) {
-        final double w = cons.maxWidth;
-
-        double window = durMs / _zoomFactor;
-
-        final double? aMs = _a?.inMilliseconds.toDouble();
-        final double? bMs = _b?.inMilliseconds.toDouble();
-        final bool hasLoop =
-            _loopEnabled && aMs != null && bMs != null && aMs! < bMs!;
-        final double loopSize = hasLoop ? (bMs! - aMs!) : 0.0;
-        const double pad = 400.0;
-
-        if (hasLoop) {
-          final double minWin = (loopSize + pad).clamp(100.0, durMs);
-          if (window < minWin) window = minWin;
-        }
-
-        final double centerMs = hasLoop ? (aMs! + bMs!) / 2.0 : posMs;
-        double startMs = centerMs - window / 2.0;
-        double endMs = centerMs + window / 2.0;
-
-        if (startMs < 0) {
-          endMs -= startMs;
-          startMs = 0;
-        }
-        if (endMs > durMs) {
-          startMs -= (endMs - durMs);
-          endMs = durMs;
-          if (startMs < 0) startMs = 0;
-        }
-        final double visibleLen =
-        (endMs - startMs) <= 0 ? 1.0 : (endMs - startMs);
-
-        double msToX(double ms) =>
-            ((ms - startMs).clamp(0.0, visibleLen) / visibleLen) * w;
-        double xToMs(double x) =>
-            startMs + ((x / w).clamp(0.0, 1.0) * visibleLen);
-
-        final double posX = msToX(posMs);
-        final double? aX = (aMs == null) ? null : msToX(aMs);
-        final double? bX = (bMs == null) ? null : msToX(bMs);
-
-        Future<void> _seekAt(double dx) async {
-          final ms = xToMs(_safeClamp(dx, 0.0, w)).round();
-          final d = Duration(milliseconds: ms);
-          if (_source == _Source.youtube) {
-            _seekYt(d);
-          } else {
-            _skipLoopOnce = true;
-            await _seekLocal(d);
-          }
-        }
-
-        return Stack(
-          clipBehavior: Clip.none,
-          children: [
-            Positioned.fill(
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.white12,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.white38),
-                ),
-              ),
-            ),
-            if (hasLoop && aX != null && bX != null)
-              Positioned(
-                left: aX,
-                right: (w - bX),
-                top: (barH - abBandH) / 2,
-                height: abBandH,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: _accent.withOpacity(0.35),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                ),
-              ),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: FractionallySizedBox(
-                widthFactor: _safeClamp(posX / w, 0.0, 1.0),
-                child: Container(
-                  height: 6,
-                  decoration: BoxDecoration(
-                    color: Colors.orangeAccent,
-                    borderRadius: BorderRadius.circular(3),
-                  ),
-                ),
-              ),
-            ),
-            Positioned(
-              left: _safeClamp(posX - posLineW / 2, 0.0, w - posLineW),
-              top: 4,
-              bottom: 4,
-              child: Container(width: posLineW, color: Colors.white),
-            ),
-            if (aX != null)
-              Positioned(
-                left: _safeClamp(aX - handleTouchW / 2, 0.0, w - handleTouchW),
-                top: 0,
-                width: handleTouchW,
-                height: barH,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onPanUpdate: (d) {
-                    final newAX = _safeClamp(aX + d.delta.dx, 0.0, w);
-                    final newAMs = xToMs(newAX).round();
-                    setState(() {
-                      _a = Duration(milliseconds: newAMs);
-                      if (_b != null && _a! >= _b!) {
-                        _b = _clampDur(
-                          _a! + const Duration(milliseconds: _minABGapMs),
-                          Duration.zero,
-                          _duration,
-                        );
-                      }
-                    });
-                  },
-                  onPanEnd: (_) => _saveCommon(),
-                  child: Center(
-                    child: Container(width: handleW, height: barH, color: _accent),
-                  ),
-                ),
-              ),
-            if (bX != null)
-              Positioned(
-                left: _safeClamp(bX - handleTouchW / 2, 0.0, w - handleTouchW),
-                top: 0,
-                width: handleTouchW,
-                height: barH,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onPanUpdate: (d) {
-                    final newBX = _safeClamp(bX + d.delta.dx, 0.0, w);
-                    final newBMs = xToMs(newBX).round();
-                    setState(() {
-                      _b = Duration(milliseconds: newBMs);
-                      if (_a != null && _b! <= _a!) {
-                        _a = _clampDur(
-                          _b! - const Duration(milliseconds: _minABGapMs),
-                          Duration.zero,
-                          _duration,
-                        );
-                      }
-                    });
-                  },
-                  onPanEnd: (_) {
-                    if (_a != null && _b != null && _a! < _b!) {
-                      setState(() => _loopEnabled = true);
-                    }
-                    _saveCommon();
-                  },
-                  child: Center(
-                    child: Container(width: handleW, height: barH, color: _accent),
-                  ),
-                ),
-              ),
-            Positioned.fill(
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTapDown: (d) => _seekAt(d.localPosition.dx),
-                onPanUpdate: (d) => _seekAt(d.localPosition.dx),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _zoomSideButton({required bool isLeft}) {
-    return Align(
-      alignment: Alignment.center,
-      child: IconButton(
-        onPressed: isLeft ? _zoomOut : _zoomIn,
-        icon: Icon(isLeft ? Icons.zoom_out : Icons.zoom_in),
-        color: Colors.white,
-        tooltip: isLeft ? "Zoom −" : "Zoom +",
-      ),
-    );
-  }
-
-  // -------------------- BUILD --------------------
+  // ------------------ BUILD ------------------
   @override
   Widget build(BuildContext context) {
     final isYt = _source == _Source.youtube;
@@ -836,45 +452,34 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
         title: const Text("Backing Player"),
         backgroundColor: Colors.black,
         actions: [
-          if (_source == _Source.youtube)
-            IconButton(
-              tooltip: "Ajouter à l’Atelier",
-              icon: const Icon(Icons.playlist_add, color: Colors.orangeAccent),
-              onPressed: () async {
-                final url = _currentYoutubeUrl();
-                if (url == null) {
-                  _snack("Aucune URL YouTube à enregistrer.");
-                  return;
-                }
-                final title = _currentTitle();
-                await _saveToLibrary(url, title);
-              },
-            ),
           IconButton(
-            tooltip: "Marquer A",
-            icon: const Icon(Icons.flag_circle_outlined),
-            onPressed: _markA,
+            tooltip: "Ajouter un marqueur",
+            icon: const Icon(Icons.bookmark_add_outlined, color: Colors.orangeAccent),
+            onPressed: _addMarkerAtCurrent,
           ),
           IconButton(
-            tooltip: "Marquer B",
-            icon: const Icon(Icons.outlined_flag),
-            onPressed: _markB,
+            tooltip: "-5s",
+            icon: const Icon(Icons.replay_5),
+            onPressed: () {
+              final t = _position - const Duration(seconds: 5);
+              if (isYt) {
+                _seekYt(t);
+              } else {
+                _seekLocal(t);
+              }
+            },
           ),
           IconButton(
-            tooltip: _loopEnabled ? "Boucle ON" : "Boucle OFF",
-            icon: Icon(Icons.loop, color: _loopEnabled ? _accent : Colors.white),
-            onPressed: _toggleLoop,
-          ),
-          TextButton.icon(
-            onPressed: _quickLoop,
-            style: TextButton.styleFrom(foregroundColor: Colors.white),
-            icon: const Icon(Icons.center_focus_strong),
-            label: const Text("Replay"),
-          ),
-          IconButton(
-            tooltip: "Effacer la boucle",
-            icon: const Icon(Icons.clear),
-            onPressed: _clearAB,
+            tooltip: "+5s",
+            icon: const Icon(Icons.forward_5),
+            onPressed: () {
+              final t = _position + const Duration(seconds: 5);
+              if (isYt) {
+                _seekYt(t);
+              } else {
+                _seekLocal(t);
+              }
+            },
           ),
         ],
       ),
@@ -887,23 +492,25 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
               children: [
                 ChoiceChip(
                   label: const Text("Local"),
-                  selected: _source == _Source.local,
-                  onSelected: (_) {
+                  selected: isLocal,
+                  onSelected: (_) async {
                     setState(() => _source = _Source.local);
-                    _saveCommon();
+                    await _saveCommon();
+                    await _loadMarkers();
                   },
                 ),
                 const SizedBox(width: 8),
                 ChoiceChip(
                   label: const Text("YouTube"),
-                  selected: _source == _Source.youtube,
-                  onSelected: (_) {
+                  selected: isYt,
+                  onSelected: (_) async {
                     setState(() => _source = _Source.youtube);
-                    _saveCommon();
+                    await _saveCommon();
+                    await _loadMarkers();
                   },
                 ),
                 const Spacer(),
-                if (_source == _Source.local)
+                if (isLocal)
                   ElevatedButton.icon(
                     onPressed: _pickLocal,
                     icon: const Icon(Icons.folder_open),
@@ -913,8 +520,8 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
             ),
           ),
 
-          // Barre YouTube
-          if (_source == _Source.youtube)
+          // Barre YouTube (si source = yt)
+          if (isYt)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
               child: Row(
@@ -928,8 +535,8 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
                         hintStyle: const TextStyle(color: Colors.white54),
                         filled: true,
                         fillColor: const Color(0xFF1a1a1a),
-                        contentPadding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
                           borderSide: const BorderSide(color: Colors.white24),
@@ -947,7 +554,7 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
               ),
             ),
 
-          // Vue média
+          // Media view
           mediaView,
 
           // Infos (titre + temps)
@@ -957,7 +564,7 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
               children: [
                 Expanded(
                   child: Text(
-                    _source == _Source.youtube
+                    isYt
                         ? (_yt?.value.metaData.title ?? "—")
                         : (_mediaPath != null ? p.basename(_mediaPath!) : "—"),
                     maxLines: 1,
@@ -974,44 +581,69 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
             ),
           ),
 
-          // Timeline large
+          // Marqueurs (chips) — avec long press via GestureDetector
           Padding(
-            padding: const EdgeInsets.fromLTRB(8, 2, 8, 10),
-            child: _timelineThick(),
-          ),
-
-          // Affinage A/B
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-            child: Row(
-              children: [
-                _miniAB(
-                  label: 'A',
-                  time: _a ?? Duration.zero,
-                  onLessSmall: () => _nudgeA(-200),
-                  onMoreSmall: () => _nudgeA(200),
-                  onLessBig: () => _nudgeA(-2000),
-                  onMoreBig: () => _nudgeA(2000),
-                ),
-                const Spacer(),
-                _miniAB(
-                  label: 'B',
-                  time: _b ?? Duration.zero,
-                  onLessSmall: () => _nudgeB(-200),
-                  onMoreSmall: () => _nudgeB(200),
-                  onLessBig: () => _nudgeB(-2000),
-                  onMoreBig: () => _nudgeB(2000),
-                ),
-              ],
+            padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+            child: _markers.isEmpty
+                ? const Align(
+              alignment: Alignment.centerLeft,
+              child: Text("Aucun marqueur — appuie sur 🔖 pour en poser",
+                  style: TextStyle(color: Colors.white54)),
+            )
+                : SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: _markers.map((m) {
+                  final chip = Chip(
+                    backgroundColor: const Color(0xFF2A2A2A),
+                    label: Text(m.name,
+                        style: const TextStyle(color: Colors.white)),
+                  );
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: GestureDetector(
+                      onTap: () => _jumpToMarker(m),
+                      onLongPress: () async {
+                        final action = await showModalBottomSheet<String>(
+                          context: context,
+                          backgroundColor: const Color(0xFF1A1A1A),
+                          builder: (_) => SafeArea(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                ListTile(
+                                  leading: const Icon(Icons.drive_file_rename_outline, color: Colors.white),
+                                  title: const Text('Renommer', style: TextStyle(color: Colors.white)),
+                                  onTap: () => Navigator.pop(context, 'rename'),
+                                ),
+                                ListTile(
+                                  leading: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                                  title: const Text('Supprimer', style: TextStyle(color: Colors.redAccent)),
+                                  onTap: () => Navigator.pop(context, 'delete'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                        if (action == 'rename') {
+                          _renameMarker(m);
+                        } else if (action == 'delete') {
+                          _deleteMarker(m.id);
+                        }
+                      },
+                      child: chip,
+                    ),
+                  );
+                }).toList(),
+              ),
             ),
           ),
 
-          // Contrôles
+          // Contrôles basiques
           Padding(
-            padding: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.fromLTRB(0, 0, 0, 12),
             child: Wrap(
               alignment: WrapAlignment.center,
-              crossAxisAlignment: WrapCrossAlignment.center,
               spacing: 8,
               runSpacing: 6,
               children: [
@@ -1020,12 +652,7 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
                   icon: const Icon(Icons.replay_5, color: Colors.white),
                   onPressed: () {
                     final t = _position - const Duration(seconds: 5);
-                    if (_source == _Source.youtube) {
-                      _seekYt(t);
-                    } else {
-                      _skipLoopOnce = true;
-                      _seekLocal(t);
-                    }
+                    isYt ? _seekYt(t) : _seekLocal(t);
                   },
                 ),
                 IconButton(
@@ -1037,7 +664,7 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
                     size: 38,
                   ),
                   onPressed: () {
-                    if (_source == _Source.youtube) {
+                    if (isYt) {
                       _playPauseYt();
                     } else {
                       _playPauseLocal();
@@ -1049,34 +676,15 @@ class _BackingPlayerScreenState extends State<BackingPlayerScreen> {
                   icon: const Icon(Icons.forward_5, color: Colors.white),
                   onPressed: () {
                     final t = _position + const Duration(seconds: 5);
-                    if (_source == _Source.youtube) {
-                      _seekYt(t);
-                    } else {
-                      _skipLoopOnce = true;
-                      _seekLocal(t);
-                    }
+                    isYt ? _seekYt(t) : _seekLocal(t);
                   },
                 ),
-                OutlinedButton.icon(
-                  onPressed: _quickLoop,
-                  icon: const Icon(Icons.replay_circle_filled),
-                  label: const Text("REPLAY"),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: _accent,
-                    side: BorderSide(color: _accent, width: 2),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10)),
-                    padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                    textStyle: const TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 16),
+                if (isLocal)
+                  IconButton(
+                    tooltip: "Ouvrir un fichier",
+                    icon: const Icon(Icons.folder_open, color: Colors.white70),
+                    onPressed: _pickLocal,
                   ),
-                ),
-                IconButton(
-                  tooltip: "Effacer la boucle",
-                  icon: const Icon(Icons.clear, color: Colors.redAccent),
-                  onPressed: _clearAB,
-                ),
               ],
             ),
           ),
