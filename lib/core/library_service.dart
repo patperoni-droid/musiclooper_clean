@@ -4,6 +4,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'library_item.dart';
 
 class LibraryService {
+  // ✅ Singleton : une seule instance partagée dans toute l’app
+  LibraryService._internal();
+  static final LibraryService _instance = LibraryService._internal();
+  factory LibraryService() => _instance;
+
   static const _k = 'atelier.items';
   final changes = ChangeNotifier();
 

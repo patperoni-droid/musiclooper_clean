@@ -136,15 +136,10 @@ class _UnifiedPlayerBetaState extends State<UnifiedPlayerBeta> {
     return _mediaPath != null ? p.basename(_mediaPath!) : "Média local";
   }
 
+// Dans UnifiedPlayerBeta (ou Backing), remplace entièrement:
   Future<void> _saveToLibrary(String url, String title) async {
-    final item = LibraryItem(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      title: title,
-      url: url,
-      source: 'youtube',
-      notes: '',
-    );
-    await _libraryService.addItem(item);
+    // utilise l’instance partagée + normalisation YouTube
+    await LibraryService().addFromUrl(url, title: title, kind: 'teacher');
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('✅ Vidéo ajoutée à l’Atelier')),

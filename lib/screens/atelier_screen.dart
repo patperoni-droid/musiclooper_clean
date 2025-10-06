@@ -16,7 +16,7 @@ class AtelierScreen extends StatefulWidget {
 }
 
 class _AtelierScreenState extends State<AtelierScreen> {
-  final _svc = LibraryService();
+  final _svc = LibraryService(); // ✅ singleton
   late Future<List<LibraryItem>> _future;
 
   final _searchCtrl = TextEditingController();
@@ -28,9 +28,10 @@ class _AtelierScreenState extends State<AtelierScreen> {
     _future = _svc.getAll();
     _svc.changes.addListener(_refresh);
 
-    // 👇 Si une URL a été partagée depuis YouTube, on l’enregistre directement
-    if (widget.initialSharedUrl != null && widget.initialSharedUrl!.contains('youtu')) {
-      _svc.addFromUrl(widget.initialSharedUrl!);
+    // ✅ si l'app est ouverte via "Partager → MusicLooper"
+    final shared = widget.initialSharedUrl?.trim();
+    if (shared != null && shared.isNotEmpty && shared.contains('youtu')) {
+      _svc.addFromUrl(shared).then((_) => _refresh());
     }
   }
 
@@ -46,10 +47,17 @@ class _AtelierScreenState extends State<AtelierScreen> {
     await _future;
   }
 
-  // ---------- Actions ----------
+  // ---------- Ajouter une URL ----------
   Future<void> _addQuick() async {
     final urlCtrl = TextEditingController();
     final titleCtrl = TextEditingController();
+
+    Future<void> _submit() async {
+      final url = urlCtrl.text.trim();
+      if (url.isEmpty) return;
+      await _svc.addFromUrl(url, title: titleCtrl.text.trim()); // ✅ utilise addFromUrl
+      if (mounted) Navigator.pop(context, true);
+    }
 
     final ok = await showDialog<bool>(
       context: context,
@@ -67,6 +75,7 @@ class _AtelierScreenState extends State<AtelierScreen> {
                 labelText: 'URL YouTube',
                 labelStyle: TextStyle(color: Colors.white70),
               ),
+              onSubmitted: (_) => _submit(), // ✅ ENTER valide
             ),
             const SizedBox(height: 8),
             TextField(
@@ -76,32 +85,24 @@ class _AtelierScreenState extends State<AtelierScreen> {
                 labelText: 'Titre (facultatif)',
                 labelStyle: TextStyle(color: Colors.white70),
               ),
+              onSubmitted: (_) => _submit(), // ✅ ENTER valide
             ),
           ],
         ),
         actions: [
           TextButton(onPressed: ()=> Navigator.pop(context, false), child: const Text('Annuler')),
-          ElevatedButton(onPressed: ()=> Navigator.pop(context, true), child: const Text('Ajouter')),
+          ElevatedButton(onPressed: _submit, child: const Text('Ajouter')),
         ],
       ),
     );
 
-    if (ok != true) return;
-    final url = urlCtrl.text.trim();
-    if (url.isEmpty) return;
-
-    await _svc.addItem(LibraryItem(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      title: (titleCtrl.text.trim().isEmpty) ? url : titleCtrl.text.trim(),
-      url: url,
-      source: 'youtube',
-      notes: '',
-    ));
-    _refresh();
+    if (ok == true) {
+      await _refresh(); // ✅ rafraîchissement immédiat
+    }
   }
 
   Future<void> _editNotes(LibraryItem it) async {
-    final controller = TextEditingController(text: it.notes ?? '');
+    final controller = TextEditingController(text: it.notes);
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -148,12 +149,7 @@ class _AtelierScreenState extends State<AtelierScreen> {
       _refresh();
     }
   }
-  Future<void> _openInPlayer(LibraryItem it) async {
-    await _svc.touchViewed(it.id);
-    Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => UnifiedPlayerBeta(initialYoutubeUrl: it.url),
-    ));
-  }
+
   Future<void> _delete(LibraryItem it) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -172,8 +168,15 @@ class _AtelierScreenState extends State<AtelierScreen> {
     }
   }
 
+  Future<void> _openInPlayer(LibraryItem it) async {
+    await _svc.touchViewed(it.id);
+    if (!mounted) return;
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => UnifiedPlayerBeta(initialYoutubeUrl: it.url),
+    ));
+  }
+
   void _openIn(LibraryItem it) async {
-    // Choix du lecteur : Player+YT ou Backing Player (marqueurs)
     final choice = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: const Color(0xFF171717),
@@ -217,7 +220,7 @@ class _AtelierScreenState extends State<AtelierScreen> {
       if (q.isEmpty) return true;
       final t = e.title.toLowerCase();
       final u = e.url.toLowerCase();
-      final n = (e.notes ?? '').toLowerCase();
+      final n = e.notes.toLowerCase();
       return t.contains(q) || u.contains(q) || n.contains(q);
     }).toList();
 
@@ -229,7 +232,6 @@ class _AtelierScreenState extends State<AtelierScreen> {
         list.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
         break;
       case _SortMode.viewed:
-      // Si ton service stocke une date lastViewedAt, sinon on retombe sur recent
         list.sort((a, b) {
           final av = a.lastViewedAt ?? a.addedAt;
           final bv = b.lastViewedAt ?? b.addedAt;
@@ -247,7 +249,6 @@ class _AtelierScreenState extends State<AtelierScreen> {
         title: const Text('Atelier'),
         centerTitle: true,
         actions: [
-          // Tri
           PopupMenuButton<_SortMode>(
             tooltip: 'Trier',
             onSelected: (m) => setState(() => _sort = m),
@@ -293,7 +294,7 @@ class _AtelierScreenState extends State<AtelierScreen> {
 
             return Column(
               children: [
-                // Barre de recherche
+                // Recherche
                 Padding(
                   padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
                   child: TextField(
