@@ -91,6 +91,12 @@ class _UnifiedPlayerBetaState extends State<UnifiedPlayerBeta> {
     final txt = input.trim();
     if (txt.isEmpty) return null;
 
+    // Autoriser les IDs bruts (11 caractères alphanumériques + _ ou -).
+    final rawId = RegExp(r'^[a-zA-Z0-9_-]{11}$');
+    if (rawId.hasMatch(txt)) {
+      return txt;
+    }
+
     final uri = Uri.tryParse(txt);
 
     // youtu.be/<id>
@@ -121,7 +127,11 @@ class _UnifiedPlayerBetaState extends State<UnifiedPlayerBeta> {
     if (_source != _Source.youtube) return null;
 
     final txt = _ytCtrl.text.trim();
-    if (txt.isNotEmpty) return txt;
+    if (txt.isNotEmpty) {
+      final id = _extractYoutubeId(txt);
+      if (id != null) return "https://youtu.be/$id";
+      return txt;
+    }
 
     final id = _yt?.value.metaData.videoId;
     if (id != null && id.isNotEmpty) return "https://youtu.be/$id";
@@ -155,9 +165,15 @@ class _UnifiedPlayerBetaState extends State<UnifiedPlayerBeta> {
     if (widget.initialYoutubeUrl != null &&
         widget.initialYoutubeUrl!.trim().isNotEmpty) {
       _source = _Source.youtube;
-      _ytCtrl.text = widget.initialYoutubeUrl!.trim();
-      final id = _extractYoutubeId(_ytCtrl.text);
-      if (id != null) _initYoutube(id);
+      final raw = widget.initialYoutubeUrl!.trim();
+      final id = _extractYoutubeId(raw);
+      if (id != null) {
+        final canonical = "https://youtu.be/$id";
+        _ytCtrl.text = canonical;
+        _initYoutube(id, autoPlay: true);
+      } else {
+        _ytCtrl.text = raw;
+      }
     }
 
     _restoreLast();
@@ -191,9 +207,14 @@ class _UnifiedPlayerBetaState extends State<UnifiedPlayerBeta> {
     // restaurer dernière vidéo YouTube
     final lastUrl = sp.getString('unified.yt.url');
     if (lastUrl != null && lastUrl.isNotEmpty) {
-      _ytCtrl.text = lastUrl;
       final id = _extractYoutubeId(lastUrl);
-      if (id != null) _initYoutube(id);
+      if (id != null) {
+        final canonical = "https://youtu.be/$id";
+        _ytCtrl.text = canonical;
+        _initYoutube(id);
+      } else {
+        _ytCtrl.text = lastUrl;
+      }
     }
 
     // restaurer dernier média local
@@ -351,7 +372,7 @@ class _UnifiedPlayerBetaState extends State<UnifiedPlayerBeta> {
     setState(() {});
   }
 
-  void _initYoutube(String id) {
+  void _initYoutube(String id, {bool autoPlay = false}) {
     // (optionnel) reset léger de la boucle à chaque nouvelle vidéo
     _loopEnabled = false;
     _a = null;
@@ -360,8 +381,8 @@ class _UnifiedPlayerBetaState extends State<UnifiedPlayerBeta> {
     if (_yt == null) {
       _yt = YoutubePlayerController(
         initialVideoId: id,
-        flags: const YoutubePlayerFlags(
-          autoPlay: false,
+        flags: YoutubePlayerFlags(
+          autoPlay: autoPlay,
           mute: false,
           useHybridComposition: true, // ✅ important sur Android récents
           enableCaption: false,
@@ -370,6 +391,9 @@ class _UnifiedPlayerBetaState extends State<UnifiedPlayerBeta> {
       )..addListener(_ytListener);
     } else {
       _yt!.load(id);
+      if (autoPlay) {
+        _yt!.play();
+      }
     }
     setState(() {});
   }
@@ -381,7 +405,11 @@ class _UnifiedPlayerBetaState extends State<UnifiedPlayerBeta> {
       _snack("URL YouTube invalide");
       return;
     }
-    _initYoutube(id);
+    final canonical = "https://youtu.be/$id";
+    if (_ytCtrl.text.trim() != canonical) {
+      _ytCtrl.text = canonical;
+    }
+    _initYoutube(id, autoPlay: true);
     _saveCommon();
   }
 
